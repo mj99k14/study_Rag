@@ -6,9 +6,12 @@ class EmbeddingFn:
     def __init__(self, model_name: str):
         self.model = SentenceTransformer(model_name)
 
+    def name(self) -> str:
+        return "custom_embedding_fn"
+
     def __call__(self, input: list[str]) -> list[list[float]]:
         return self.model.encode(input).tolist()
-    
+
 
 class VectorStore:
     def __init__(self, db_path, model_name: str):
@@ -25,7 +28,7 @@ class VectorStore:
             self.collection.add(
                 ids=[f"{source}_{chunk['id']}"],
                 documents=[chunk["summary"]],
-                metadates=[{
+                metadatas=[{
                     "source": source,
                     "label": chunk["label"],
                     "original_text": chunk["original_text"],
@@ -33,32 +36,31 @@ class VectorStore:
                 }],
             )
 
-    def search(Self, query: str, n_results: int = 5 ) -> list[dict]:
+    def search(self, query: str, n_results: int = 5) -> list[dict]:
         count = self.collection.count()
         if count == 0:
-            return[]
-        
+            return []
+
         results = self.collection.query(
             query_texts=[query],
             n_results=min(n_results, count),
         )
         output = []
-        for doc, meta in zip(results["documents"][0], results["metadatas"[0]]):
+        for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
             output.append({
                 "summary": doc,
-                "orginal_text": meta["orginal_text"],
+                "original_text": meta["original_text"],
                 "source": meta["source"],
                 "label": meta["label"],
                 "pages": meta["pages"],
             })
         return output
-    
+
     def list_documents(self) -> list[str]:
-        results = self.client.get_collection("pdf_chunks").get(include=["metadates"])
+        results = self.client.get_collection("pdf_chunks").get(include=["metadatas"])
         sources = {m["source"] for m in results["metadatas"]}
         return sorted(sources)
-    
+
     def document_exists(self, source: str) -> bool:
-        results = self.collection.get(where={"source": source}, inclaude=["metadatas"])
+        results = self.collection.get(where={"source": source}, include=["metadatas"])
         return len(results["ids"]) > 0
-    
