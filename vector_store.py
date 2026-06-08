@@ -12,6 +12,9 @@ class EmbeddingFn:
     def __call__(self, input: list[str]) -> list[list[float]]:
         return self.model.encode(input).tolist()
 
+    def embed_query(self, input: list[str]) -> list[list[float]]:
+        return self.model.encode(input).tolist()
+
 
 class VectorStore:
     def __init__(self, db_path, model_name: str):

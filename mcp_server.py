@@ -10,7 +10,14 @@ DB_DIR = os.getenv("DB_DIR", "./chroma_db")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "paraphrase-multilingual-mpnet-base-v2")
 PORT = int(os.getenv("MCP_PORT", "8000"))
 
+# stdout을 stderr로 리디렉트해서 모델 로딩 메시지가 MCP 프로토콜을 오염시키지 않도록 함
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
 store = VectorStore(db_path=DB_DIR, model_name=EMBED_MODEL)
+
+sys.stdout = _real_stdout
+
 mcp = FastMCP("PDF RAG", host="0.0.0.0", port=PORT)
 
 
@@ -20,7 +27,7 @@ def search_knowledge(query: str, n_results: int = 5) -> str:
     results = store.search(query, n_results)
     if not results:
         return "검색 결과가 없습니다. ingest.py를 먼저 실행해주세요."
-    
+
     lines = []
     for i, r in enumerate(results, 1):
         lines.append(f"[{i}] 출처: {r['source']} — {r['label']} (p.{r['pages']})")
