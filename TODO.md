@@ -1,261 +1,196 @@
-# PDF RAG MCP 서버 — 구현 계획
+# PDF RAG MCP 서버 — 구현 기록
 
-## 전체 파이프라인
+## 프로젝트 목표
+
+PDF 문서를 지식베이스로 사용해서 Claude Desktop에서 Q&A가 가능한 MCP 서버 구축.  
+"2026년 해외취업연수사업 운영기관 모집공고" PDF를 대상으로 개발 및 검증.
+
+---
+
+## RAG 타입 선택 이유
+
+| 타입 | 설명 | 선택 여부 |
+|------|------|-----------|
+| Naive RAG | 원본 텍스트를 그대로 임베딩 | ❌ 검색 품질 낮음 |
+| **Advanced RAG** | **LLM 요약문을 임베딩 대상으로 사용** | ✅ **채택** |
+| GraphRAG | 지식 그래프 구축 후 탐색 | ❌ 구축 비용 큼 |
+| Agentic RAG | LLM이 반복 검색·추론 | ✅ deep_search 툴로 부분 구현 |
+
+**Advanced RAG를 선택한 이유**:  
+원본 텍스트보다 LLM이 생성한 요약이 사용자 질문과 의미적으로 더 가깝게 매칭된다.  
+예: "최소 인원이 몇 명이야?" → 요약에 "최소 연수인원 10명" 명시 → 벡터 유사도 향상
+
+---
+
+## 전체 아키텍처 흐름
 
 ```
+[인제스트 파이프라인] — 사전 처리 (1회 실행)
+
 PDF 파일
-  └─ [사람] chunks.json 으로 페이지 범위 직접 지정
-       └─ pdf_extractor.py  →  페이지 범위별 텍스트 추출
-            └─ chunk_processor.py  →  각 청크를 Claude API로 요약
-                 └─ vector_store.py  →  원본 + 요약 임베딩해서 ChromaDB 저장
-                      └─ mcp_server.py  →  FastMCP 도구로 검색 노출
-                           └─ Claude Desktop  →  Q&A
-```
+  └─ 사람이 chunks.json에 페이지 범위 직접 지정
+       └─ pdf_extractor.py
+            ├─ PyMuPDF(fitz): 일반 텍스트 추출
+            └─ pdfplumber: 표(table) 구조 추가 추출 → [표] 마커로 병합
+                 └─ chunk_processor.py
+                      └─ Claude Haiku API: 도메인 특화 프롬프트로 섹션 요약 생성
+                           └─ vector_store.py
+                                ├─ sentence-transformers: 요약문 임베딩
+                                └─ PostgreSQL: (id, label, pages, summary, original_text, embedding) 저장
 
-## 파일 구조
 
-```
-PDFRAG/
-├── mcp_server.py          # FastMCP 서버 진입점
-├── pdf_extractor.py       # PDF 페이지별 텍스트 추출
-├── chunk_processor.py     # chunks.json + LLM 요약 생성
-├── vector_store.py        # ChromaDB 저장/검색
-├── ingest.py              # 파이프라인 실행 스크립트
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-├── .env
-├── .env.example
-├── pdfs/                  # PDF 파일 보관
-├── chunks/                # 사람이 작성하는 chunks.json 파일들
-└── chroma_db/             # ChromaDB 자동 생성 (gitignore)
+[검색 파이프라인] — 실시간 질의
+
+Claude Desktop
+  └─ MCP 도구 호출 (search_knowledge 또는 deep_search)
+       └─ vector_store.search()
+            ├─ 벡터 검색: 코사인 유사도로 청크 랭킹
+            ├─ 키워드 검색: 한국어 조사 제거 후 substring 매칭
+            └─ RRF(Reciprocal Rank Fusion): 두 랭킹 합산
+                 └─ 검색 결과 (요약 + 원본 텍스트 2000자) 반환
+                      └─ Claude Desktop이 결과 읽고 최종 답변 생성
 ```
 
 ---
 
-## 단계별 TODO
+## 파일별 역할 설명
 
----
+### `pdf_extractor.py`
+PDF에서 텍스트를 추출하는 도구.
 
-### Phase 1: 환경 세팅
+- **PyMuPDF(fitz)**: 일반 텍스트 추출. 속도 빠르고 한국어 잘 처리
+- **pdfplumber**: 표(table) 구조 추가 추출. fitz는 표 셀을 일렬로 나열하는데, pdfplumber는 `구분 | 오리엔테이션 | 필수 연수과목` 형태로 구조 보존
+- 두 결과를 합쳐서 반환 (중복 있어도 LLM 요약 품질이 더 중요)
 
-- [x] `requirements.txt` 작성
-- [x] 가상환경 생성 및 패키지 설치 (`.venv`)
-- [x] `.env.example` 작성
-- [x] `.gitignore` 작성
-- [x] `pdfs/`, `chunks/` 폴더 생성
+### `chunk_processor.py`
+추출된 텍스트를 Claude Haiku로 요약하는 도구.
 
----
+**왜 요약을 임베딩하나?**  
+원본 텍스트 "○(최소 연수인원) 10명(과정별 10명 이상 구성 시 개설 가능)"은  
+사용자 질문 "최소 인원이 몇 명이야?"와 벡터 유사도가 낮다.  
+요약에 "최소 연수인원 10명"이 명시되면 벡터 검색이 더 잘 된다.
 
-### Phase 2: PDF 텍스트 추출기 (`pdf_extractor.py`)
-
-**목표**: PDF의 특정 페이지 범위에서 텍스트만 뽑아내는 도구
-
-- [x] `PDFExtractor` 클래스 작성
-- [x] 단독 실행 테스트
-
----
-
-### Phase 3: chunks.json 형식 설계 + 직접 작성
-
-**목표**: 사람이 PDF를 읽고 의미 단위로 청크 경계를 직접 지정
-
-- [x] `chunks/` 폴더 아래 PDF마다 json 파일 작성
-- [x] `chunks.json` 형식 정의 및 테스트용 PDF 작성
-
----
-
-### Phase 4: LLM 처리기 (`chunk_processor.py`)
-
-**목표**: 각 청크 텍스트를 Claude API로 요약 생성
-
-- [x] `ChunkProcessor` 클래스 작성 (`claude-haiku-4-5-20251001`)
-- [x] 단독 실행 테스트
-
----
-
-### Phase 5: 벡터 스토어 구현 (`vector_store.py`)
-
-**목표**: 원본 텍스트 + LLM 요약을 임베딩해서 벡터 DB에 저장
-
-- [x] ChromaDB 기반 `VectorStore` 클래스 작성 (완료)
-- [x] 단독 실행 저장/검색 테스트 통과
-- **[BLOCKED]** Claude Desktop 샌드박스(CodexSandboxUsers)에서 ChromaDB Rust 바인딩이 `os error 5` (Access Denied)로 실패 → **PostgreSQL로 교체 결정**
-
----
-
-### Phase 6: 파이프라인 실행 스크립트 (`ingest.py`)
-
-**목표**: chunks/ 폴더를 읽어서 전체 파이프라인 한 번에 실행
-
-- [x] `ingest.py` 작성 (전체 처리 / 특정 파일만 처리 옵션 포함)
-- [x] 실행 테스트 (ChromaDB 기준으로 동작 확인)
-
----
-
-### Phase 7: MCP 서버 구현 (`mcp_server.py`)
-
-**목표**: FastMCP로 도구 노출
-
-- [x] 환경변수 로드, `VectorStore` 인스턴스 생성
-- [x] `search_knowledge`, `list_documents` 도구 구현
-- [x] stdio / SSE 실행 모드 분기
-- [x] stdout 오염 방지 (`sys.stdout = sys.stderr` 처리)
-
----
-
-### Phase 8: 로컬 Claude Desktop 연결 테스트
-
-- [x] `claude_desktop_config.json` 수정 (`.venv` 경로 + `cwd` 설정 완료)
-- **[BLOCKED]** ChromaDB가 Claude Desktop 샌드박스에서 동작 안 함 → Phase 8.5로 해결
-
----
-
-### Phase 8.5: ChromaDB → PostgreSQL 마이그레이션 ← **지금 여기**
-
-**이유**: Claude Desktop이 MCP 프로세스를 `CodexSandboxUsers` 샌드박스로 실행하는데,
-ChromaDB 1.5.x Rust 바인딩이 파일 잠금/메모리맵에서 `os error 5 (Access Denied)` 발생.
-PostgreSQL은 TCP 네트워크 접속이라 샌드박스 제한 없이 동작 가능.
-
-#### 8.5-A: PostgreSQL 비밀번호 재설정 (관리자 작업)
-
-- [ ] **[사용자 직접]** `pg_hba.conf` 임시 수정
-  - 파일 위치: `C:\Program Files\PostgreSQL\18\data\pg_hba.conf`
-  - `scram-sha-256` → `trust` 로 아래 두 줄 변경
-    ```
-    # IPv4 local connections:
-    host    all             all             127.0.0.1/32            trust
-    # IPv6 local connections:
-    host    all             all             ::1/128                 trust
-    ```
-- [ ] **[사용자 직접]** PostgreSQL 서비스 재시작
-  ```powershell
-  Restart-Service postgresql-x64-18
-  ```
-- [ ] **[사용자 직접]** 비밀번호 설정 (새 비밀번호로 변경)
-  ```powershell
-  & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -c "ALTER USER postgres WITH PASSWORD 'newpassword';"
-  ```
-- [ ] **[사용자 직접]** `pg_hba.conf` 원복 (`trust` → `scram-sha-256`)
-- [ ] **[사용자 직접]** PostgreSQL 서비스 재시작
-- [ ] **[사용자 직접]** 새 비밀번호로 접속 확인
-  ```powershell
-  & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -c "\l"
-  ```
-
-#### 8.5-B: pdfrag 데이터베이스 생성
-
-- [ ] DB 및 pgvector 확장 생성
-  ```sql
-  CREATE DATABASE pdfrag;
-  \c pdfrag
-  CREATE EXTENSION IF NOT EXISTS vector;
-  ```
-  > ※ pgvector 없으면 float[] + numpy 코사인 유사도로 대체 가능
-
-#### 8.5-C: `vector_store.py` PostgreSQL로 재작성 (Claude가 할 작업)
-
-- [ ] `psycopg2-binary` 설치
-  ```bash
-  .venv\Scripts\pip install psycopg2-binary numpy
-  ```
-- [ ] `vector_store.py` 전면 재작성
-  - `chromadb` 제거
-  - `psycopg2` + `numpy` 코사인 유사도 사용
-  - 테이블 자동 생성 (`pdf_chunks`)
-  - 동일한 public 인터페이스 유지 (`add_processed_chunks`, `search`, `list_documents`, `document_exists`)
-- [ ] `.env` 에 PostgreSQL 접속 정보 추가
-  ```
-  PG_HOST=localhost
-  PG_PORT=5432
-  PG_DB=pdfrag
-  PG_USER=postgres
-  PG_PASSWORD=<설정한 비밀번호>
-  ```
-- [ ] `requirements.txt` 업데이트 (`psycopg2-binary` 추가, `chromadb` 제거)
-
-#### 8.5-D: 재테스트
-
-- [ ] `ingest.py` 재실행 (PostgreSQL에 데이터 채우기)
-- [ ] Claude Desktop 재시작
-- [ ] `search_knowledge` 도구 정상 동작 확인
-- [ ] PDF 내용 기반 Q&A 테스트
-
----
-
-### Phase 9: Docker 설정
-
-- [ ] `Dockerfile` 작성
-  ```dockerfile
-  FROM python:3.11-slim
-  WORKDIR /app
-  COPY requirements.txt .
-  RUN pip install --no-cache-dir -r requirements.txt
-  RUN python -c "from sentence_transformers import SentenceTransformer; \
-      SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')"
-  COPY . .
-  RUN mkdir -p pdfs chunks chroma_db
-  EXPOSE 8000
-  CMD ["python", "mcp_server.py", "sse"]
-  ```
-- [ ] `docker-compose.yml` 작성
-  ```yaml
-  services:
-    pdfrag:
-      build: .
-      ports:
-        - "8000:8000"
-      volumes:
-        - ./pdfs:/app/pdfs
-        - ./chunks:/app/chunks
-        - ./chroma_db:/app/chroma_db
-      env_file: .env
-      restart: unless-stopped
-  ```
-- [ ] 로컬 Docker 빌드/실행 테스트
-  ```bash
-  docker-compose up --build
-  ```
-
----
-
-### Phase 10: 서버 배포 및 원격 연결
-
-- [ ] 교수님 서버에 프로젝트 복사
-- [ ] `docker-compose up -d` 실행
-- [ ] Claude Desktop SSE URL로 변경
-  ```json
-  {
-    "mcpServers": {
-      "pdfrag": {
-        "url": "http://<서버-IP>:8000/sse"
-      }
-    }
-  }
-  ```
-- [ ] 원격 Q&A 테스트
-
----
-
-## 구현 순서 요약
-
+**프롬프트 구조** (도메인 특화):
 ```
-Phase 1 (환경)
-  → Phase 2 (PDF 추출기)
-    → Phase 3 (chunks.json 직접 작성)
-      → Phase 4 (LLM 요약기)
-        → Phase 5 (벡터 스토어)
-          → Phase 6 (ingest 파이프라인)
-            → Phase 7 (MCP 서버)
-              → Phase 8 (로컬 테스트)
-                → Phase 9 (Docker)
-                  → Phase 10 (서버 배포)
+- 문서 맥락: '해외취업연수사업 운영기관 모집공고'
+- 예상 질문 유형 명시 (인원수, 지원금, 자격요건 등)
+- 출력 형식: ## 요약 / ## 주요 수치 및 조건 / ## 검색 키워드
+- max_tokens: 800
 ```
 
-## 주의사항
+### `vector_store.py`
+임베딩 저장 및 **하이브리드 검색** 담당.
 
-- Anthropic API 키 필요 — `.env`에 `ANTHROPIC_API_KEY` 설정
-- `sentence-transformers` 첫 실행 시 모델 다운로드 (~1GB)
-- `ingest.py`는 mcp_server 실행 전에 먼저 돌려야 DB가 채워짐
-- Docker에서 `pdfs/`, `chunks/`, `chroma_db/` 반드시 볼륨 마운트
-- 청크 경계를 잘 나눌수록 검색 품질이 올라감 — 장/절 단위 권장
+**왜 하이브리드 검색인가?**  
+벡터 검색은 의미 유사도 기반이라 숫자("10명"), 고유명사("트랙Ⅱ") 같은 정확한 키워드 검색에 약하다.  
+키워드 검색을 병행하면 이를 보완할 수 있다.
+
+**RRF(Reciprocal Rank Fusion) 방식**:
+```
+벡터 랭킹:    ch05(1위) ch07(2위) ch09(3위) ...
+키워드 랭킹:  ch07(1위) ch05(2위) ch08(3위) ...
+
+RRF 점수 = Σ 1/(K + rank)  (K=60 표준값)
+→ 두 랭킹에서 모두 상위권인 청크가 최종 상위로 올라옴
+```
+
+**한국어 조사 제거**: "연수인원은" → "연수인원"으로 변환 후 매칭
+
+### `ingest.py`
+전체 파이프라인을 한 번에 실행하는 스크립트.
+
+```bash
+python ingest.py          # chunks/ 전체 처리
+python ingest.py 2026     # 2026.json만 처리
+```
+
+`document_exists()` 체크로 이미 처리된 문서는 건너뜀.  
+재처리 필요 시: `python delete_chunks.py 2026` 먼저 실행.
+
+### `mcp_server.py`
+Claude Desktop과 연결되는 MCP 서버. 3개 도구 제공.
+
+**`search_knowledge(query, n_results=5)`**  
+단순 하이브리드 검색. 빠르고 일반 질문에 적합.
+
+**`deep_search(question, n_results=5)`** ← Agentic RAG  
+```
+Step 1: Claude Haiku가 질문을 검색어 3개로 분해
+         "최소 연수인원은?" → ["최소 연수인원", "과정별 인원 제한", "연수생 모집 조건"]
+Step 2: 각 검색어로 hybrid 검색, 중복 제거 후 합산
+Step 3: Claude Haiku가 self-check 수행
+         → [확인 가능] 원문에서 직접 찾을 수 있는 내용
+         → [확인 불가] 원문에 없거나 추론 필요한 내용
+Step 4: 검증 결과 + 청크 내용을 Claude Desktop에 전달
+```
+
+**`list_documents()`**  
+로드된 PDF 목록 반환.
+
+**`instructions` (Generation Grounding)**  
+규정 문서 특성상 Claude Desktop이 원문을 벗어나 추론하는 "Generation Grounding Failure"를 방지하기 위한 서버 수준 지침:
+```
+1. 검색 결과에서 동일하거나 가장 유사한 제목을 찾는다
+2. 해당 제목 아래 내용만 사용한다
+3. 다른 섹션 내용을 반대로 해석하거나 추론하지 않는다
+4. 원문에 없는 항목은 추가하지 않는다
+```
+
+### `delete_chunks.py`
+DB 청크 삭제 유틸리티.
+
+```bash
+python delete_chunks.py 2026   # 특정 문서만 삭제
+python delete_chunks.py        # 전체 삭제
+```
+
+### `chunks/2026.json`
+사람이 직접 작성하는 청킹 설정. 페이지 범위를 직접 지정하는 이유:  
+LLM 자동 청킹보다 장/절 단위 수동 청킹이 의미 경계를 더 정확히 잡음.
+
+**청킹 전략 교훈**: ch08이 "취업 인정 기준 + 선발 제외 기준" 두 주제를 포함했을 때,  
+모델이 "선발 기준"을 뒤집어 "선발 제외 기준"으로 답변하는 오류 발생.  
+→ ch08a(취업인정기준) / ch08b(선발·제외기준)으로 분리해서 해결.
+
+---
+
+## 발생했던 문제와 해결
+
+| 문제 | 원인 | 해결 |
+|------|------|------|
+| ChromaDB `os error 5` | Claude Desktop 샌드박스에서 Rust 바인딩 접근 거부 | PostgreSQL로 교체 |
+| "10명" 검색 실패 | 벡터 유사도가 숫자 키워드에 약함 | RRF 하이브리드 검색 도입 |
+| OT 표 내용 잘림 | `original_text[:500]` 제한 | 2000자로 확대 |
+| 선발 제외 기준 오답 | ch08이 두 주제 혼합 (Generation Grounding Failure) | 청크 분리 + instructions 추가 |
+| pdfplumber 표 셀 비어있음 | 병합 셀(rowspan/colspan) 구조 한계 | fitz 텍스트로 내용 보완됨 |
+
+---
+
+## 실행 명령어 요약
+
+```bash
+# 의존성 설치
+pip install -r requirements.txt
+
+# DB 초기화 (처음 한 번)
+python ingest.py 2026
+
+# 재인제스트 (코드·청크 변경 시)
+python delete_chunks.py 2026
+python ingest.py 2026
+
+# 로컬 MCP 서버 실행 (Claude Desktop이 자동 실행)
+python mcp_server.py
+
+# SSE 서버 모드 (Docker/원격)
+python mcp_server.py sse
+```
+
+---
+
+## 남은 작업
+
+- [ ] Phase 9: Docker 설정 (`Dockerfile`, `docker-compose.yml`)
+- [ ] Phase 10: 교수님 서버 배포 및 원격 SSE 연결 테스트
+- [ ] 개선 가능: pgvector 확장 도입으로 DB 내 벡터 인덱스 활용 (데이터 증가 시)
+- [ ] 개선 가능: 다른 PDF 문서 추가 시 chunks.json 작성 후 `python ingest.py <이름>` 실행

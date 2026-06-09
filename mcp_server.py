@@ -46,26 +46,11 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def search_knowledge(query: str, n_results: int = 5) -> str:
+def search_knowledge(question: str, n_results: int = 5) -> str:
     """PDF 지식베이스에서 관련 내용을 검색합니다."""
-    results = store.search(query, n_results)
-    if not results:
-        return "검색 결과가 없습니다. ingest.py를 먼저 실행해주세요."
-
-    lines = []
-    for i, r in enumerate(results, 1):
-        lines.append(f"[{i}] 출처: {r['source']} — {r['label']} (p.{r['pages']})")
-        lines.append(f"[요약] {r['summary']}")
-        lines.append(f"[원본] {r['original_text'][:2000]}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def deep_search(question: str, n_results: int = 5) -> str:
-    """질문을 LLM이 여러 검색어로 분해한 뒤 반복 검색하는 Agentic RAG 검색입니다."""
-    # Step 1: LLM으로 질문을 검색어 3개로 분해
     client = anthropic.Anthropic(api_key=API_KEY)
+
+    # Step 1: 질문을 검색어 3개로 분해
     decomp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
@@ -78,7 +63,6 @@ def deep_search(question: str, n_results: int = 5) -> str:
             ),
         }],
     )
-
     raw = decomp.content[0].text.strip()
     match = re.search(r'\[.*?\]', raw, re.DOTALL)
     try:
@@ -99,7 +83,7 @@ def deep_search(question: str, n_results: int = 5) -> str:
     if not all_results:
         return "검색 결과가 없습니다."
 
-    # Step 3: Self-check — 검색 결과로 질문에 답 가능한지 LLM이 먼저 검증
+    # Step 3: Self-check — 원문 기준으로 답변 가능 여부 검증
     retrieved_summary = "\n".join(
         f"[{r['label']}]: {r['original_text'][:500]}"
         for r in all_results[:n_results]
