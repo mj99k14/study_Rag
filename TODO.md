@@ -39,33 +39,11 @@ PDFRAG/
 
 ### Phase 1: 환경 세팅
 
-- [ ] `requirements.txt` 작성
-  ```
-  mcp[cli]>=1.0.0
-  anthropic>=0.40.0
-  pymupdf>=1.24.0
-  chromadb>=0.5.0
-  sentence-transformers>=3.0.0
-  python-dotenv>=1.0.0
-  uvicorn>=0.30.0
-  ```
-- [ ] 가상환경 생성 및 패키지 설치
-  ```bash
-  python -m venv .venv
-  .venv\Scripts\activate
-  pip install -r requirements.txt
-  ```
-- [ ] `.env.example` 작성
-  ```
-  ANTHROPIC_API_KEY=sk-ant-...
-  PDF_DIR=./pdfs
-  CHUNK_DIR=./chunks
-  DB_DIR=./chroma_db
-  EMBED_MODEL=paraphrase-multilingual-mpnet-base-v2
-  MCP_PORT=8000
-  ```
-- [ ] `.gitignore` 작성 (`chroma_db/`, `pdfs/`, `.env`, `.venv/`)
-- [ ] `pdfs/`, `chunks/` 폴더 생성
+- [x] `requirements.txt` 작성
+- [x] 가상환경 생성 및 패키지 설치 (`.venv`)
+- [x] `.env.example` 작성
+- [x] `.gitignore` 작성
+- [x] `pdfs/`, `chunks/` 폴더 생성
 
 ---
 
@@ -73,15 +51,8 @@ PDFRAG/
 
 **목표**: PDF의 특정 페이지 범위에서 텍스트만 뽑아내는 도구
 
-- [ ] `PDFExtractor` 클래스 작성
-  - `extract_pages(filepath, start_page, end_page) -> str`
-    - 지정한 페이지 범위의 텍스트를 하나의 문자열로 반환
-    - 페이지 번호는 1부터 시작
-  - 내부 `_clean(text)` : 불필요한 공백/줄바꿈 정리
-- [ ] 단독 실행 테스트
-  ```bash
-  python pdf_extractor.py  # 테스트용 main 블록
-  ```
+- [x] `PDFExtractor` 클래스 작성
+- [x] 단독 실행 테스트
 
 ---
 
@@ -89,28 +60,8 @@ PDFRAG/
 
 **목표**: 사람이 PDF를 읽고 의미 단위로 청크 경계를 직접 지정
 
-- [ ] `chunks/` 폴더 아래 PDF마다 json 파일 하나씩 작성
-  ```
-  chunks/
-  ├── lecture01.json
-  ├── paper_abc.json
-  └── ...
-  ```
-- [ ] `chunks.json` 형식 정의
-  ```json
-  {
-    "source": "lecture01.pdf",
-    "chunks": [
-      { "id": "ch01", "label": "1장 서론",      "pages": [1, 5]  },
-      { "id": "ch02", "label": "2장 방법론",     "pages": [6, 14] },
-      { "id": "ch03", "label": "3장 실험 결과",  "pages": [15, 22] },
-      { "id": "ch04", "label": "4장 결론",       "pages": [23, 27] }
-    ]
-  }
-  ```
-  - `pages`: `[시작페이지, 끝페이지]` (양 끝 포함)
-  - `label`: 청크 설명 (검색 결과에 출처로 표시됨)
-- [ ] 테스트용 PDF 하나로 실제 chunks.json 직접 작성해보기
+- [x] `chunks/` 폴더 아래 PDF마다 json 파일 작성
+- [x] `chunks.json` 형식 정의 및 테스트용 PDF 작성
 
 ---
 
@@ -118,46 +69,18 @@ PDFRAG/
 
 **목표**: 각 청크 텍스트를 Claude API로 요약 생성
 
-- [ ] `ChunkProcessor` 클래스 작성
-  - `__init__(api_key)` : Anthropic 클라이언트 초기화
-  - `process(chunk_id, label, text) -> Dict`
-    - Claude에 요약 요청
-    - 반환: `{"id", "label", "original_text", "summary", "source", "pages"}`
-  - 내부 `_build_prompt(label, text) -> str`
-    - 프롬프트 예시:
-      ```
-      아래는 문서의 [{label}] 섹션입니다.
-      핵심 내용을 3~5문장으로 요약하고, 주요 개념/키워드를 추출해주세요.
-
-      [텍스트]
-      {text}
-      ```
-- [ ] 사용할 모델: `claude-haiku-4-5-20251001` (빠름, 저렴)
-- [ ] 단독 실행 테스트 (청크 하나 넣어서 요약 확인)
+- [x] `ChunkProcessor` 클래스 작성 (`claude-haiku-4-5-20251001`)
+- [x] 단독 실행 테스트
 
 ---
 
 ### Phase 5: 벡터 스토어 구현 (`vector_store.py`)
 
-**목표**: 원본 텍스트 + LLM 요약을 임베딩해서 ChromaDB에 저장
+**목표**: 원본 텍스트 + LLM 요약을 임베딩해서 벡터 DB에 저장
 
-- [ ] `VectorStore` 클래스 작성
-  - `__init__(db_path, model_name)` : ChromaDB + SentenceTransformer 초기화
-  - `add_processed_chunks(chunks, source)` : 가공된 청크 저장
-    - **임베딩 대상**: `요약문` (검색 품질이 원본보다 좋음)
-    - **저장 내용**: 원본 텍스트 + 요약 + 레이블 + 페이지 정보 (메타데이터)
-  - `search(query, n_results) -> List[Dict]` : 코사인 유사도 검색
-    - 반환: 원본 텍스트 + 요약 + 출처 정보
-  - `list_documents() -> List[str]` : 저장된 소스 목록
-  - `document_exists(source) -> bool` : 중복 로드 방지
-- [ ] 임베딩 함수: SentenceTransformer 직접 구현 (chromadb 버전 의존성 회피)
-  ```python
-  class EmbeddingFn:
-      def __init__(self, model_name): self.model = SentenceTransformer(model_name)
-      def __call__(self, input: list[str]) -> list[list[float]]:
-          return self.model.encode(input).tolist()
-  ```
-- [ ] 단독 실행으로 저장/검색 테스트
+- [x] ChromaDB 기반 `VectorStore` 클래스 작성 (완료)
+- [x] 단독 실행 저장/검색 테스트 통과
+- **[BLOCKED]** Claude Desktop 샌드박스(CodexSandboxUsers)에서 ChromaDB Rust 바인딩이 `os error 5` (Access Denied)로 실패 → **PostgreSQL로 교체 결정**
 
 ---
 
@@ -165,28 +88,8 @@ PDFRAG/
 
 **목표**: chunks/ 폴더를 읽어서 전체 파이프라인 한 번에 실행
 
-- [ ] `ingest.py` 작성
-  ```
-  실행 흐름:
-  1. chunks/ 폴더의 모든 .json 파일 읽기
-  2. 각 json에서 source PDF와 청크 목록 로드
-  3. 이미 DB에 있는 source면 건너뜀
-  4. PDFExtractor로 페이지별 텍스트 추출
-  5. ChunkProcessor로 LLM 요약 생성
-  6. VectorStore에 저장
-  ```
-- [ ] 실행 방법
-  ```bash
-  python ingest.py              # 전체 chunks/ 처리
-  python ingest.py lecture01    # 특정 파일만 처리
-  ```
-- [ ] 처리 결과 출력 예시
-  ```
-  [lecture01.pdf] ch01 서론 (p.1-5) → 요약 생성 완료
-  [lecture01.pdf] ch02 방법론 (p.6-14) → 요약 생성 완료
-  ...
-  총 4개 청크 저장 완료
-  ```
+- [x] `ingest.py` 작성 (전체 처리 / 특정 파일만 처리 옵션 포함)
+- [x] 실행 테스트 (ChromaDB 기준으로 동작 확인)
 
 ---
 
@@ -194,45 +97,89 @@ PDFRAG/
 
 **목표**: FastMCP로 도구 노출
 
-- [ ] 환경변수 로드 (`python-dotenv`)
-- [ ] `VectorStore` 인스턴스 생성
-- [ ] 도구 구현
-  - `search_knowledge(query, n_results=5)` : 검색 결과 반환
-    ```
-    반환 형식:
-    [1] 출처: lecture01.pdf — 2장 방법론 (p.6-14)
-    [요약] ...
-    [원본] ...
-    ```
-  - `list_documents()` : 로드된 문서 목록
-- [ ] 실행 모드 분기
-  ```bash
-  python mcp_server.py        # stdio (로컬 Claude Desktop)
-  python mcp_server.py sse    # SSE (Docker/서버)
-  ```
-- [ ] FastMCP 설정
-  ```python
-  mcp = FastMCP("PDF RAG", host="0.0.0.0", port=PORT)
-  ```
+- [x] 환경변수 로드, `VectorStore` 인스턴스 생성
+- [x] `search_knowledge`, `list_documents` 도구 구현
+- [x] stdio / SSE 실행 모드 분기
+- [x] stdout 오염 방지 (`sys.stdout = sys.stderr` 처리)
 
 ---
 
 ### Phase 8: 로컬 Claude Desktop 연결 테스트
 
-- [ ] `%APPDATA%\Claude\claude_desktop_config.json` 수정
-  ```json
-  {
-    "mcpServers": {
-      "pdfrag": {
-        "command": "C:/Users/YJU/Desktop/PDFRAG/.venv/Scripts/python.exe",
-        "args": ["C:/Users/YJU/Desktop/PDFRAG/mcp_server.py"]
-      }
-    }
-  }
+- [x] `claude_desktop_config.json` 수정 (`.venv` 경로 + `cwd` 설정 완료)
+- **[BLOCKED]** ChromaDB가 Claude Desktop 샌드박스에서 동작 안 함 → Phase 8.5로 해결
+
+---
+
+### Phase 8.5: ChromaDB → PostgreSQL 마이그레이션 ← **지금 여기**
+
+**이유**: Claude Desktop이 MCP 프로세스를 `CodexSandboxUsers` 샌드박스로 실행하는데,
+ChromaDB 1.5.x Rust 바인딩이 파일 잠금/메모리맵에서 `os error 5 (Access Denied)` 발생.
+PostgreSQL은 TCP 네트워크 접속이라 샌드박스 제한 없이 동작 가능.
+
+#### 8.5-A: PostgreSQL 비밀번호 재설정 (관리자 작업)
+
+- [ ] **[사용자 직접]** `pg_hba.conf` 임시 수정
+  - 파일 위치: `C:\Program Files\PostgreSQL\18\data\pg_hba.conf`
+  - `scram-sha-256` → `trust` 로 아래 두 줄 변경
+    ```
+    # IPv4 local connections:
+    host    all             all             127.0.0.1/32            trust
+    # IPv6 local connections:
+    host    all             all             ::1/128                 trust
+    ```
+- [ ] **[사용자 직접]** PostgreSQL 서비스 재시작
+  ```powershell
+  Restart-Service postgresql-x64-18
   ```
-- [ ] `ingest.py` 실행해서 DB 채우기
-- [ ] Claude Desktop 재시작 후 `search_knowledge` 도구 확인
-- [ ] 질문 테스트: PDF 내용 기반 Q&A 확인
+- [ ] **[사용자 직접]** 비밀번호 설정 (새 비밀번호로 변경)
+  ```powershell
+  & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -c "ALTER USER postgres WITH PASSWORD 'newpassword';"
+  ```
+- [ ] **[사용자 직접]** `pg_hba.conf` 원복 (`trust` → `scram-sha-256`)
+- [ ] **[사용자 직접]** PostgreSQL 서비스 재시작
+- [ ] **[사용자 직접]** 새 비밀번호로 접속 확인
+  ```powershell
+  & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -c "\l"
+  ```
+
+#### 8.5-B: pdfrag 데이터베이스 생성
+
+- [ ] DB 및 pgvector 확장 생성
+  ```sql
+  CREATE DATABASE pdfrag;
+  \c pdfrag
+  CREATE EXTENSION IF NOT EXISTS vector;
+  ```
+  > ※ pgvector 없으면 float[] + numpy 코사인 유사도로 대체 가능
+
+#### 8.5-C: `vector_store.py` PostgreSQL로 재작성 (Claude가 할 작업)
+
+- [ ] `psycopg2-binary` 설치
+  ```bash
+  .venv\Scripts\pip install psycopg2-binary numpy
+  ```
+- [ ] `vector_store.py` 전면 재작성
+  - `chromadb` 제거
+  - `psycopg2` + `numpy` 코사인 유사도 사용
+  - 테이블 자동 생성 (`pdf_chunks`)
+  - 동일한 public 인터페이스 유지 (`add_processed_chunks`, `search`, `list_documents`, `document_exists`)
+- [ ] `.env` 에 PostgreSQL 접속 정보 추가
+  ```
+  PG_HOST=localhost
+  PG_PORT=5432
+  PG_DB=pdfrag
+  PG_USER=postgres
+  PG_PASSWORD=<설정한 비밀번호>
+  ```
+- [ ] `requirements.txt` 업데이트 (`psycopg2-binary` 추가, `chromadb` 제거)
+
+#### 8.5-D: 재테스트
+
+- [ ] `ingest.py` 재실행 (PostgreSQL에 데이터 채우기)
+- [ ] Claude Desktop 재시작
+- [ ] `search_knowledge` 도구 정상 동작 확인
+- [ ] PDF 내용 기반 Q&A 테스트
 
 ---
 

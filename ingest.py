@@ -10,13 +10,19 @@ load_dotenv()
 
 PDF_DIR = Path(os.getenv("PDF_DIR", "./pdfs"))
 CHUNK_DIR = Path(os.getenv("CHUNK_DIR", "./chunks"))
-DB_DIR = Path(os.getenv("DB_DIR", "./chroma_db"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "paraphrase-multilingual-mpnet-base-v2")
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
+PG_URL = "postgresql://{user}:{pw}@{host}:{port}/{db}".format(
+    user=os.getenv("PG_USER", "postgres"),
+    pw=os.getenv("PG_PASSWORD", ""),
+    host=os.getenv("PG_HOST", "localhost"),
+    port=os.getenv("PG_PORT", "5432"),
+    db=os.getenv("PG_DB", "pdfrag"),
+)
 
 extractor = PDFExtractor()
 processor = ChunkProcessor(api_key=API_KEY)
-store = VectorStore(db_path=str(DB_DIR), model_name=EMBED_MODEL)
+store = VectorStore(pg_url=PG_URL, model_name=EMBED_MODEL)
 
 def ingest_file(json_path: Path):
     with open(json_path, encoding="utf-8") as f:

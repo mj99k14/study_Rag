@@ -6,15 +6,20 @@ from vector_store import VectorStore
 
 load_dotenv()
 
-DB_DIR = os.getenv("DB_DIR", "./chroma_db")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "paraphrase-multilingual-mpnet-base-v2")
 PORT = int(os.getenv("MCP_PORT", "8000"))
+PG_URL = "postgresql://{user}:{pw}@{host}:{port}/{db}".format(
+    user=os.getenv("PG_USER", "postgres"),
+    pw=os.getenv("PG_PASSWORD", ""),
+    host=os.getenv("PG_HOST", "localhost"),
+    port=os.getenv("PG_PORT", "5432"),
+    db=os.getenv("PG_DB", "pdfrag"),
+)
 
-# stdout을 stderr로 리디렉트해서 모델 로딩 메시지가 MCP 프로토콜을 오염시키지 않도록 함
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
 
-store = VectorStore(db_path=DB_DIR, model_name=EMBED_MODEL)
+store = VectorStore(pg_url=PG_URL, model_name=EMBED_MODEL)
 
 sys.stdout = _real_stdout
 
