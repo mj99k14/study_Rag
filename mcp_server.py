@@ -54,13 +54,18 @@ def search_knowledge(question: str, n_results: int = 5) -> str:
     """PDF 지식베이스에서 관련 내용을 검색합니다."""
     client = anthropic.Anthropic(api_key=API_KEY)
 
-    def decompose(q: str) -> list[str]:
+    def decompose(q: str, exclude: list[str] | None = None) -> list[str]:
+        exclude_hint = (
+            f"\n이미 사용한 검색어: {exclude}\n완전히 다른 관점으로 만들어줘."
+            if exclude else ""
+        )
         resp = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
             messages=[{"role": "user", "content": (
-                f"다음 질문을 검색에 유리한 핵심 키워드 중심의 검색어 3개로 분해해줘.\n"
-                f"JSON 배열로만 답해. 예: [\"검색어1\", \"검색어2\", \"검색어3\"]\n\n"
+                f"다음 질문을 검색에 유리한 핵심 키워드 중심의 검색어로 분해해줘.\n"
+                f"질문 복잡도에 따라 1~5개 사이로 스스로 판단해서 결정해.\n"
+                f"JSON 배열로만 답해. 예: [\"검색어1\", \"검색어2\"]{exclude_hint}\n\n"
                 f"질문: {q}"
             )}],
         )
@@ -71,77 +76,73 @@ def search_knowledge(question: str, n_results: int = 5) -> str:
         except (json.JSONDecodeError, AttributeError):
             return [q]
 
-    def run_search(queries: list[str], existing: set[str]) -> list[dict]:
+    def run_search(queries: list[str], seen: set[str]) -> list[dict]:
         results: list[dict] = []
         for q in queries:
             for r in get_store().search(q, n_results=3):
-                if r["label"] not in existing:
-                    existing.add(r["label"])
+                if r["label"] not in seen:
+                    seen.add(r["label"])
                     results.append(r)
         return results
 
-    # Step 1: 질문 분해 후 1차 검색
-    queries = decompose(question)
+    def self_check(results: list[dict]) -> tuple[str, bool]:
+        summary = "\n".join(
+            f"[{r['label']}]: {r['original_text'][:500]}"
+            for r in results[:n_results]
+        )
+        check = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": (
+                f"다음 검색된 원문을 보고, 질문에 대해 원문에서 직접 확인 가능한 내용과 불가능한 내용을 구분해줘.\n\n"
+                f"질문: {question}\n\n"
+                f"검색된 원문:\n{summary}\n\n"
+                f"형식:\n"
+                f"[확인 가능] 원문에서 직접 찾을 수 있는 답변 내용 (원문 그대로 인용)\n"
+                f"[확인 불가] 원문에 없거나 추론이 필요한 내용"
+            )}],
+        )
+        verification = check.content[0].text.strip()
+        quality = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{"role": "user", "content": (
+                f"질문에 답하기에 검색 결과가 충분한가? YES 또는 NO만 답해.\n\n"
+                f"질문: {question}\n검증결과:\n{verification}"
+            )}],
+        )
+        sufficient = "YES" in quality.content[0].text.upper()
+        return verification, sufficient
+
+    MAX_RETRIES = 2
     seen: set[str] = set()
-    all_results = run_search(queries, seen)
+    all_queries: list[str] = []
+    all_results: list[dict] = []
+    attempt_log: list[str] = []
+
+    # 1차 검색
+    queries = decompose(question)
+    all_queries.extend(queries)
+    all_results.extend(run_search(queries, seen))
+    attempt_log.append(f"[1차 검색] {queries}")
 
     if not all_results:
         return "검색 결과가 없습니다."
 
-    # Step 2: Self-check
-    retrieved_summary = "\n".join(
-        f"[{r['label']}]: {r['original_text'][:500]}"
-        for r in all_results[:n_results]
-    )
-    check = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
-        messages=[{"role": "user", "content": (
-            f"다음 검색된 원문을 보고, 질문에 대해 원문에서 직접 확인 가능한 내용과 불가능한 내용을 구분해줘.\n\n"
-            f"질문: {question}\n\n"
-            f"검색된 원문:\n{retrieved_summary}\n\n"
-            f"형식:\n"
-            f"[확인 가능] 원문에서 직접 찾을 수 있는 답변 내용 (원문 그대로 인용)\n"
-            f"[확인 불가] 원문에 없거나 추론이 필요한 내용"
-        )}],
-    )
-    verification = check.content[0].text.strip()
-
-    # Step 3: 결과 부족하면 재검색
-    retry_queries: list[str] = []
-    quality = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=10,
-        messages=[{"role": "user", "content": (
-            f"질문에 답하기에 검색 결과가 충분한가? YES 또는 NO만 답해.\n\n"
-            f"질문: {question}\n검증결과:\n{verification}"
-        )}],
-    )
-    if "NO" in quality.content[0].text.upper():
-        retry_resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            messages=[{"role": "user", "content": (
-                f"다음 질문에 대한 검색 결과가 불충분했습니다.\n"
-                f"다른 관점이나 더 넓은 범위의 검색어 3개를 JSON 배열로만 제시해줘.\n\n"
-                f"질문: {question}\n기존 검색어: {queries}"
-            )}],
-        )
-        raw2 = retry_resp.content[0].text.strip()
-        m2 = re.search(r'\[.*?\]', raw2, re.DOTALL)
-        try:
-            retry_queries = json.loads(m2.group()) if m2 else []
-        except (json.JSONDecodeError, AttributeError):
-            retry_queries = []
-
-        if retry_queries:
+    # 충분할 때까지 반복 (최대 MAX_RETRIES회 추가)
+    verification = ""
+    for attempt in range(MAX_RETRIES + 1):
+        verification, sufficient = self_check(all_results)
+        if sufficient:
+            break
+        if attempt < MAX_RETRIES:
+            retry_queries = decompose(question, exclude=all_queries)
+            all_queries.extend(retry_queries)
             extra = run_search(retry_queries, seen)
             all_results.extend(extra)
+            attempt_log.append(f"[{attempt + 2}차 재검색] {retry_queries}")
 
-    lines = [f"[검색어 분해] {queries}"]
-    if retry_queries:
-        lines.append(f"[재검색] {retry_queries}")
-    lines.append(f"\n[검증]\n{verification}\n")
+    lines = attempt_log + [f"\n[검증]\n{verification}\n"]
     for i, r in enumerate(all_results[:n_results], 1):
         lines.append(f"[{i}] 출처: {r['source']} — {r['label']} (p.{r['pages']})")
         lines.append(f"[요약] {r['summary']}")
