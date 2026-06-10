@@ -14,7 +14,7 @@ PDF 문서를 지식베이스로 사용해서 Claude Desktop에서 Q&A가 가능
 | Naive RAG | 원본 텍스트를 그대로 임베딩 | ❌ 검색 품질 낮음 |
 | **Advanced RAG** | **LLM 요약문을 임베딩 대상으로 사용** | ✅ **채택** |
 | GraphRAG | 지식 그래프 구축 후 탐색 | ❌ 구축 비용 큼 |
-| Agentic RAG | LLM이 반복 검색·추론 | ✅ deep_search 툴로 부분 구현 |
+| Agentic RAG | LLM이 반복 검색·추론 | ✅ search_knowledge 내부에 통합 구현 |
 
 **Advanced RAG를 선택한 이유**:  
 원본 텍스트보다 LLM이 생성한 요약이 사용자 질문과 의미적으로 더 가깝게 매칭된다.  
@@ -42,7 +42,7 @@ PDF 파일
 [검색 파이프라인] — 실시간 질의
 
 Claude Desktop
-  └─ MCP 도구 호출 (search_knowledge 또는 deep_search)
+  └─ MCP 도구 호출 (search_knowledge)
        └─ vector_store.search()
             ├─ 벡터 검색: 코사인 유사도로 청크 랭킹
             ├─ 키워드 검색: 한국어 조사 제거 후 substring 매칭
@@ -108,12 +108,10 @@ python ingest.py 2026     # 2026.json만 처리
 재처리 필요 시: `python delete_chunks.py 2026` 먼저 실행.
 
 ### `mcp_server.py`
-Claude Desktop과 연결되는 MCP 서버. 3개 도구 제공.
+Claude Desktop과 연결되는 MCP 서버. 2개 도구 제공.
 
-**`search_knowledge(query, n_results=5)`**  
-단순 하이브리드 검색. 빠르고 일반 질문에 적합.
-
-**`deep_search(question, n_results=5)`** ← Agentic RAG  
+**`search_knowledge(question, n_results=5)`** ← Agentic RAG 통합  
+Claude Desktop에 노출되는 유일한 검색 도구. 내부에서 3단계 처리:
 ```
 Step 1: Claude Haiku가 질문을 검색어 3개로 분해
          "최소 연수인원은?" → ["최소 연수인원", "과정별 인원 제한", "연수생 모집 조건"]
@@ -123,6 +121,8 @@ Step 3: Claude Haiku가 self-check 수행
          → [확인 불가] 원문에 없거나 추론 필요한 내용
 Step 4: 검증 결과 + 청크 내용을 Claude Desktop에 전달
 ```
+도구를 하나로 통합한 이유: Claude Desktop이 두 도구 중 하나를 선택할 때 잘못 고를 수 있어서,  
+선택 자체를 없애고 항상 full pipeline을 실행하도록 변경.
 
 **`list_documents()`**  
 로드된 PDF 목록 반환.

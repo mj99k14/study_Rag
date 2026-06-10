@@ -21,12 +21,16 @@ PG_URL = "postgresql://{user}:{pw}@{host}:{port}/{db}".format(
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-_real_stdout = sys.stdout
-sys.stdout = sys.stderr
+_store: VectorStore | None = None
 
-store = VectorStore(pg_url=PG_URL, model_name=EMBED_MODEL)
-
-sys.stdout = _real_stdout
+def get_store() -> VectorStore:
+    global _store
+    if _store is None:
+        _real_stdout = sys.stdout
+        sys.stdout = sys.stderr
+        _store = VectorStore(pg_url=PG_URL, model_name=EMBED_MODEL)
+        sys.stdout = _real_stdout
+    return _store
 
 mcp = FastMCP(
     "PDF RAG",
@@ -74,7 +78,7 @@ def search_knowledge(question: str, n_results: int = 5) -> str:
     seen: set[str] = set()
     all_results: list[dict] = []
     for q in queries:
-        for r in store.search(q, n_results=3):
+        for r in get_store().search(q, n_results=3):
             key = r["label"]
             if key not in seen:
                 seen.add(key)
@@ -118,7 +122,7 @@ def search_knowledge(question: str, n_results: int = 5) -> str:
 @mcp.tool()
 def list_documents() -> str:
     """로드된 PDF 문서 목록을 반환합니다."""
-    docs = store.list_documents()
+    docs = get_store().list_documents()
     if not docs:
         return "로드된 문서가 없습니다."
     return "\n".join(f"- {d}" for d in docs)
